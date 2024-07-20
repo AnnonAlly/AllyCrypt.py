@@ -1,4 +1,3 @@
-
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.backends import default_backend
@@ -9,6 +8,12 @@ import os
 import getpass
 import string
 import random
+import hmac
+
+MAX_INTENTOS_FALLIDOS = 3
+BLOQUEO_TEMPORAL = 60  # Bloqueo temporal en segundos
+
+intentos_fallidos = 0
 
 def generar_clave_pbkdf2(password, salt, length=32, iterations=100000):
     kdf = PBKDF2HMAC(
@@ -20,18 +25,34 @@ def generar_clave_pbkdf2(password, salt, length=32, iterations=100000):
     )
     return kdf.derive(password.encode())
 
+def calcular_mac(clave, datos):
+    mac = hmac.new(clave, datos, 'sha256')
+    return mac.digest()
+
 def cifrar_texto(clave, texto):
     iv = os.urandom(16)
     cipher = Cipher(algorithms.AES(clave), modes.GCM(iv), backend=default_backend())
     encryptor = cipher.encryptor()
     texto_cifrado = encryptor.update(texto.encode()) + encryptor.finalize()
-    return base64.b64encode(iv + encryptor.tag + texto_cifrado)
+    
+    # Calcular el MAC sobre los datos cifrados
+    mac = calcular_mac(clave, texto_cifrado)
+    
+    return base64.b64encode(iv + encryptor.tag + texto_cifrado + mac)
 
 def descifrar_texto(clave, texto_cifrado):
     texto_cifrado = base64.b64decode(texto_cifrado)
     iv = texto_cifrado[:16]
     tag = texto_cifrado[16:32]
-    texto_cifrado = texto_cifrado[32:]
+    texto_cifrado = texto_cifrado[32:-32]  # Excluir el MAC del texto cifrado
+    mac = texto_cifrado[-32:]  # Extraer el MAC del texto cifrado
+    texto_cifrado = texto_cifrado[:-32]  # Excluir el MAC del texto cifrado
+    
+    # Verificar el MAC
+    mac_calculado = calcular_mac(clave, texto_cifrado)
+    if mac != mac_calculado:
+        raise ValueError("Error: El MAC no coincide. Posible manipulación de datos.")
+    
     cipher = Cipher(algorithms.AES(clave), modes.GCM(iv, tag), backend=default_backend())
     decryptor = cipher.decryptor()
     texto_descifrado = decryptor.update(texto_cifrado) + decryptor.finalize()
@@ -46,16 +67,23 @@ def obtener_opcion_valida():
             print("Opción no válida. Por favor, elige 1 o 2.")
 
 def obtener_password():
-    while True:
+    global intentos_fallidos
+    while intentos_fallidos < MAX_INTENTOS_FALLIDOS:
         password = getpass.getpass("Introduce tu contraseña: ")
         confirmacion = getpass.getpass("Confirma tu contraseña: ")
         if password == confirmacion:
             if validar_contraseña(password):
+                intentos_fallidos = 0
                 return password
             else:
                 print("La contraseña no cumple con los criterios de seguridad mínimos.")
         else:
             print("Las contraseñas no coinciden. Por favor, inténtalo de nuevo.")
+        intentos_fallidos += 1
+    print("Demasiados intentos fallidos. Bloqueando temporalmente...")
+    time.sleep(BLOQUEO_TEMPORAL)
+    intentos_fallidos = 0
+    return None
 
 def validar_contraseña(password):
     # Longitud mínima de 8 caracteres
@@ -93,34 +121,36 @@ def main():
     if opcion == "1":
         texto = input("Introduce el texto a cifrar: ")
         password = obtener_password()
-        salt = generar_salt()
-        clave = generar_clave_pbkdf2(password, salt)
-        texto_cifrado = cifrar_texto(clave, texto)
-        # Almacenar la sal junto con el texto cifrado
-        texto_cifrado = base64.b64encode(salt + texto_cifrado)
-        print("Texto cifrado:")
-        print(texto_cifrado.decode())
-        # Limpiar la contraseña y la sal de la memoria
-        limpiar_memoria(password.encode())
-        limpiar_memoria(salt)
+        if password:
+            salt = generar_salt()
+            clave = generar_clave_pbkdf2(password, salt)
+            texto_cifrado = cifrar_texto(clave, texto)
+            # Almacenar la sal junto con el texto cifrado
+            texto_cifrado = base64.b64encode(salt + texto_cifrado)
+            print("Texto cifrado:")
+            print(texto_cifrado.decode())
+            # Limpiar la contraseña y la sal de la memoria
+            limpiar_memoria(password.encode())
+            limpiar_memoria(salt)
 
     elif opcion == "2":
         texto_cifrado_base64 = input("Introduce el texto cifrado: ")
         password = obtener_password()
-        texto_cifrado = base64.b64decode(texto_cifrado_base64)
-        # Extraer la sal del texto cifrado
-        salt = texto_cifrado[:16]
-        texto_cifrado = texto_cifrado[16:]
-        clave = generar_clave_pbkdf2(password, salt)
-        try:
-            texto_original = descifrar_texto(clave, texto_cifrado)
-            print("Texto descifrado:")
-            print(texto_original)
-        except ValueError:
-            print("Error: La clave proporcionada no es válida.")
-        # Limpiar la contraseña y la sal de la memoria
-        limpiar_memoria(password.encode())
-        limpiar_memoria(salt)
+        if password:
+            texto_cifrado = base64.b64decode(texto_cifrado_base64)
+            # Extraer la sal del texto cifrado
+            salt = texto_cifrado[:16]
+            texto_cifrado = texto_cifrado[16:]
+            clave = generar_clave_pbkdf2(password, salt)
+            try:
+                texto_original = descifrar_texto(clave, texto_cifrado)
+                print("Texto descifrado:")
+                print(texto_original)
+            except ValueError:
+                print("Error: La clave proporcionada no es válida.")
+            # Limpiar la contraseña y la sal de la memoria
+            limpiar_memoria(password.encode())
+            limpiar_memoria(salt)
 
 if __name__ == "__main__":
     main()
